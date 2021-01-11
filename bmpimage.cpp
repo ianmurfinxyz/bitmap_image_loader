@@ -6,12 +6,9 @@
 #include <cinttypes>
 #include <vector>
 #include <fstream>
+#include <cmath>
 #include "color.h"
 #include "bmpimage.h"
-
-// Endianess note: The integer data in BMP files is stored little-endian (LE). This class
-// makes the assumption the host machine is also LE to read bytes from bmp files directly into 
-// integer variables. Thus this code will only run on LE machines such as x86-64 (ARM is BE).
 
 int BmpImage::load(std::string filename)
 {
@@ -48,7 +45,7 @@ int BmpImage::load(std::string filename)
   int infoHeadVersion {1};
 
   if(infoHead._headerSize_bytes >= V2INFOHEADER_SIZE_BYTES ||
-    (infoHead._headerSize_bytes == V1INFOHEADER_SIZE_BYTES && infoHead._compression == BI_BITFIELDS)
+    (infoHead._headerSize_bytes == V1INFOHEADER_SIZE_BYTES && infoHead._compression == BI_BITFIELDS))
   {
     file.read(reinterpret_cast<char*>(&infoHead._redMask), sizeof(infoHead._redMask));
     file.read(reinterpret_cast<char*>(&infoHead._greenMask), sizeof(infoHead._greenMask));
@@ -79,10 +76,11 @@ int BmpImage::load(std::string filename)
 
   switch(infoHead._bitsPerPixel)
   {
+  case 1:
   case 2:
   case 4:
   case 8:
-    extractPalettedPixels(file, fileHead, infoHead);
+    extractIndexedPixels(file, fileHead, infoHead);
     break;
   case 16:
     if(infoHead._compression == BI_RGB){
@@ -119,56 +117,12 @@ int BmpImage::load(std::string filename)
   return 0;
 }
 
-void BmpImage::extractPalettedPixels(std::ifstream& file, FileHeader& fileHead, InfoHeader& infoHead)
+void BmpImage::extractIndexedPixels(std::ifstream& file, FileHeader& fileHead, InfoHeader& infoHead)
 {
-  // note: this function handles 1-bit, 2-bit, 4-bit and 8-bit pixels.
-
-  // FORMAT OF INDICES IN A BYTE
-  //
-  // For pixels of 8-bits or less, the pixel data consists of indices into a color palette. The
-  // indices are either 1-bit, 2-bit, 4-bit or 8-bit values and are packed into the bytes of a
-  // row such that, for example, a bitmap with 2-bit indices, will have 4 indices in each byte
-  // of a row.
-  //
-  // Consider an 8x1 [width, height] bitmap with 2-bit indices permitting 2^2=4 colors in the
-  // palette illustrated as:
-  //
-  //            p0 p1 p2 p3 p4 p5 p6 p7        pN == pixel number in the row
-  //           +--+--+--+--+--+--+--+--+
-  //           |I0|I1|I0|I2|I0|I3|I0|I1|       IN == index N into color palette
-  //           +--+--+--+--+--+--+--+--+
-  //                [8x1 bitmap]
-  //
-  // Since this bitmap uses 2-bits per index, 4 indices (so 4 pixels) can be packed into a 
-  // single byte. The specific format for how these indices are packed is such that the 
-  // left-most pixel in the row is stored in the most-significant bits of the byte which can 
-  // be illustrated as:
-  //
-  //                 p0 p1 p2 p3
-  //              0b 00 01 00 10     <-- the 0rth byte in the bottom row (the only row).
-  //                 ^  ^  ^  ^
-  //                 |  |  |  |
-  //                 I0 I1 I0 I2
-  //
-  // The bottom row will actually consist of 4 bytes in total. We will have 2 bytes for the 
-  // pixels since the row has 8 pixels and we can pack 4 indices (1 for each pixel) into a 
-  // single byte, and we will have 2 bytes of padding since rows must be 4-byte aligned in the
-  // bitmap file. Thus our full row bytes will read as:
-  //
-  //                [byte0]          [byte1]         [byte2]          [byte3]
-  //               p0 p1 p2 p3      p4 p5 p6 p7
-  //          | 0b 00 01 00 10 | 0b 00 11 00 01 { 0b 00 00 00 00 | 0b 00 00 00 00 }
-  //               ^  ^  ^  ^       ^  ^  ^  ^
-  //               |  |  |  |       |  |  |  |               [padding]
-  //               I0 I1 I0 I2      I0 I3 I0 I1
-  //              
-  // note that although the pixels are stored from left-to-right, the bits in the indices are
-  // still read from right-to-left, i.e. decimal 2 = 0b10 and not 0b01.
-
   // extract the color palette.
   std::vector<Color4> palette {};
-  file.seekg(FILEHEADER_SIZE_BYTES + header._headerSize_bytes, std::ios::beg);
-  for(uint8_t i = 0; i < header._numPaletteColors; ++i){
+  file.seekg(FILEHEADER_SIZE_BYTES + infoHead._headerSize_bytes, std::ios::beg);
+  for(uint8_t i = 0; i < infoHead._numPaletteColors; ++i){
     char bytes[4];
     file.read(bytes, 4);
 

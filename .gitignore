@@ -1,1 +1,4 @@
 todo
+example/example
+example/log
+example/*.o
