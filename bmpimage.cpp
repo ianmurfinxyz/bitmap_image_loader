@@ -48,8 +48,7 @@ int BmpImage::load(std::string filename)
   int infoHeadVersion {1};
 
   if(infoHead._headerSize_bytes >= V2INFOHEADER_SIZE_BYTES ||
-    (infoHead._headerSize_bytes == V1INFOHEADER_SIZE_BYTES && 
-     infoHead._compression == BI_BITFIELDS)
+    (infoHead._headerSize_bytes == V1INFOHEADER_SIZE_BYTES && infoHead._compression == BI_BITFIELDS)
   {
     file.read(reinterpret_cast<char*>(&infoHead._redMask), sizeof(infoHead._redMask));
     file.read(reinterpret_cast<char*>(&infoHead._greenMask), sizeof(infoHead._greenMask));
@@ -120,8 +119,7 @@ int BmpImage::load(std::string filename)
   return 0;
 }
 
-void BmpImage::extractPalettedPixels(std::ifstream& file, FileHeader& fileHead, 
-                                  InfoHeader& infoHead)
+void BmpImage::extractPalettedPixels(std::ifstream& file, FileHeader& fileHead, InfoHeader& infoHead)
 {
   // note: this function handles 1-bit, 2-bit, 4-bit and 8-bit pixels.
 
@@ -230,8 +228,7 @@ void BmpImage::extractPalettedPixels(std::ifstream& file, FileHeader& fileHead,
   delete[] row;
 }
 
-void BmpImage::extractPixels(std::ifstream& file, FileHeader& fileHead, 
-                                InfoHeader& infoHead)
+void BmpImage::extractPixels(std::ifstream& file, FileHeader& fileHead, InfoHeader& infoHead)
 {
   // note: this function handles 16-bit, 24-bit and 32-bit pixels.
 
