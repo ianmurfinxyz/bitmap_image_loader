@@ -1,0 +1,776 @@
+--------------------------------------------------------------------------------
+  FILE: bmp_file_format.doc
+  AUTHOR: Ian Murfin - github.com/ianmurfinxyz
+  CREATED: Fri 8 Jan 2021
+  UPDATED: Mon 11 Jan 2021
+--------------------------------------------------------------------------------
+
+0 - CONTENTS
+
+ 1 - Introduction
+ 2 - File Structure
+ 3 - File Header
+ 4 - Info Header Versions
+ 5 - Possible Variations of BMP File
+ 6 - Info Headers and Variations
+ 7 - Color Table Format
+ 8 - Pixel Array Format
+ 8 - Indexed Pixel Format
+ 9 - RGBAX Pixel Format
+10 - Steps To Load a Bitmap
+11 - References
+
+--------------------------------------------------------------------------------
+
+1 - INTRO
+
+This document provides an overview of the bitmap image file format (.bmp file).
+
+Whilst the format itself is simple it can become complicated when considering
+all possible variations in format for bitmap files which results from there
+being multiple versions of file headers and many supported pixel formats and
+compression modes. The purpose of this document is to help clear up some of
+the complexity in writing a loader which can handle the many bmp format 
+variations you may encounter in the 'wild'.
+
+This document is intended for anyone who wants to make a simple bmp file loader
+which can load simple uncompressed bitmaps, ignoring the extra color space 
+information that is included in the latest versions of the bmp file format. 
+The loader discussed in this doc can handle indexed pixel data and RGBAX pixel 
+data.
+
+For further information on the bmp file format, such as descriptions of ICC 
+color profiles and color space data which this doc does not discuss, consider
+checking out the references section.
+
+--------------------------------------------------------------------------------
+
+2 - FILE STRUCTURE
+
+Bitmap files contain two headers at the top of the file: 1. the file header and 
+2. the info (or DIB) header. The exact structure of a bitmap file varies 
+depending on the version of the latter header (the info header) used and on 
+format of the pixels in the file.
+
+All bitmap files use the same version of the file header but can use any of the
+9 different versions of the info header.
+
+In practice a few of the versions will not be encountered as they are deprecated,
+and of those that will be encountered, they are all extensions of prior versions
+which contain extra data rather than completely revising the header. These factors
+simplify the picture considerably. For a discussion of the formats you will likely
+encounter see section 5.
+
+Reference [0] gives the general overview of the bitmap file structure shown in
+figure 2.1. Refer to [0] for the full diagram, figure 2.1. is a simplified version.
+
+  +-----------+----------+-----------+-----------+
+  | structure | optional |   size    |  purpose  |
+  |    name   |          |           |           |
+  ================================================
+  | file      | no       |  14 bytes | general   | 
+  | header    |          |           | info      |
+  +-----------+----------+-----------+-----------+
+  | info      | no       | versions  | detailed  |
+  | header    |          | differ in | info and  |
+  |           |          | fixed     | pixel     |
+  |           |          | size      | format    |
+  +-----------+----------+-----------+-----------+
+  | extra bit | yes      | 12 bytes  | used to   |
+  | masks     |          |           | define    |
+  |           |          |           | pixel     |
+  |           |          |           | format    |
+  +-----------+----------+-----------+-----------+
+  | color     | yes      | variable  | mandatory |
+  | table     |          | size      | for color |
+  |           |          |           | depths <=8|
+  +-----------+----------+-----------+-----------+
+  | gap 1     | yes      | variable  | structure |
+  | table     |          | size      | alignment |
+  +-----------+----------+-----------+-----------+
+  | pixel     | no       | variable  | the actual|
+  | array     |          | size      | pixel data|
+  +-----------+----------+-----------+-----------+
+  | gap 2     | yes      | variable  | structure |
+  | table     |          | size      | alignment |
+  +-----------+----------+-----------+-----------+
+  | ICC color | yes      | variable  | defines   |
+  | profile   |          | size      | color     |
+  |           |          |           | profiles  |
+  |           |          |           | for color |
+  |           |          |           | management|
+  +-----------+----------+-----------+-----------+
+
+  [figure 2.1. simplified general overview of bitmap file structure.]
+
+--------------------------------------------------------------------------------
+
+3 - FILE HEADER
+
+The file header is super simple as it contains only 3 bits of actual data: 
+    1. the file magic which identifies the file, 
+    2. the total size of the file, and
+    3. the offset into the file where the pixel array starts.
+
+The file header is always 14 bytes in size and occupies the first 14 bytes
+in the bmp file; its structure is shown in figure 3.1.
+
+  +---------+--------+------------------------------------------------+
+  | offset  | size   | purpose                                        |
+  | (dec)   |(bytes) |                                                |
+  =====================================================================
+  | 0       | 2      | file magic, 0x4247 in hex, which is 'BM' in    |
+  |         |        | ASCII                                          |
+  +---------+--------+------------------------------------------------+
+  | 2       | 4      | total size of the file in bytes.               |
+  +---------+--------+------------------------------------------------+
+  | 6       | 2      | reserved (so unused)                           |
+  +---------+--------+------------------------------------------------+
+  | 8       | 2      | reserved (so unused)                           |
+  +---------+--------+------------------------------------------------+
+  | 10      | 4      | offset to the pixel array in the file          |
+  +---------+--------+------------------------------------------------+
+
+  [figure 3.1. Structure of the bitmap file header]
+
+All values in the file header are simply unsigned integers stored in little 
+endian format thus this header could be represented as a C struct as:
+
+struct BitmapFileHeader
+{
+  uint16_t magic;
+  uint32_t fileSize;
+  uint16_t reserved[2];
+  uint32_t pixelOffset;
+};
+
+If you are on a x86-64 machine which uses little-endian memory encoding you
+can simply read the data from file directly into variables. The loader I have 
+written in this project is intended for x86 platforms and thus will do this.
+On big-endian machines such as ARM processors you will have to do some 
+endian swapping.
+
+--------------------------------------------------------------------------------
+
+4 - INFO HEADER VERSIONS
+
+The 9 versions of the info header are shown in figure 4.1.
+
+  +---------+--------------------+---------------+
+  | size    |     header name    |  written by   |
+  | (bytes) |                    |               |
+  +---------+--------------------+---------------+
+  | 12      | BITMAPCOREHEADER   |               |
+  |         | OS21XBITMAPHEADER  |               |
+  +---------+--------------------+---------------+
+  | 64      | OS22XBITMAPHEADER  |               |
+  +---------+--------------------+---------------+
+  | 16      | OS22XBITMAPHEADER  |               |
+  +---------+--------------------+---------------+
+  | 40      | BITMAPINFOHEADER   |               |
+  +---------+--------------------+---------------+
+  | 52      | BITMAPV2INFOHEADER | photoshop     |
+  +---------+--------------------+---------------+
+  | 56      | BITMAPV3INFOHEADER | photoshop     |
+  +---------+--------------------+---------------+
+  | 108     | BITMAPV4HEADER     |               |
+  +---------+--------------------+---------------+
+  | 124     | BITMAPV5HEADER     | gimp          |
+  +---------+--------------------+---------------+
+
+  [figure 4.1. All versions of the bitmap info header.]
+
+In practice the os2 versions are used only for a rarely used OS so can be
+ignored and the BITMAPCOREHEADER has been superseded by BITMAPINFOHEADER which
+appears now to be used as a common base for backwards compatibility. Thus the 
+BITMAPCOREHEADER will likely never be encountered either. Which leaves us with
+those listed in figure 4.2.
+
+  +---------+--------------------+-----------------+
+  | size    |     header name    |  written by     |
+  | (bytes) |                    |                 |
+  +---------+--------------------+-----------------+
+  | 40      | BITMAPINFOHEADER   | gimp            | <-- we will call this
+  +---------+--------------------+-----------------+     version 1 in this doc.
+  | 52      | BITMAPV2INFOHEADER | photoshop       |
+  +---------+--------------------+-----------------+
+  | 56      | BITMAPV3INFOHEADER | photoshop & gimp|
+  +---------+--------------------+-----------------+
+  | 108     | BITMAPV4HEADER     |                 |
+  +---------+--------------------+-----------------+
+  | 124     | BITMAPV5HEADER     | gimp            |
+  +---------+--------------------+-----------------+
+
+  [figure 4.2. The only info headers I care about.]
+
+Thankfully this is not as bad as it seems as each version is simply an extension
+of the last, hence the sizes increase, but the data each version contains does
+not change from the last, it only expands.
+
+Figure 4.3 shows the structure of the all different info header versions.
+
+note: most all data in the header are unsigned integers with the exception of 
+those explicitly stated otherwise.
+
+  +---------+---------+--------+-----------------------------------------------+
+  | file    | header  | size   | purpose                                       |
+  | offset  | offset  |(bytes) |                                               |
+  | (dec)   | (dec)   |(bytes) |                                               |
+  ==============================================================================
+            
+  ******************************************************************************
+  | since BITMAPINFOHEADER - 40 bytes                                          | 
+  ******************************************************************************
+  | 14      | 0       | 4      | The size of this header. This depends on the  |
+  |         |         |        | header version and is used to id the version  | 
+  |         |         |        | and thus what data is in the info header.     | 
+  +---------+---------+--------+-----------------------------------------------+
+  | 18      | 4       | 4      | the bitmap width in pixels (signed integer).  |
+  +---------+---------+--------+-----------------------------------------------+
+  | 22      | 8       | 4      | the bitmap height in pixels (signed integer). |
+  +---------+---------+--------+-----------------------------------------------+
+  | 26      | 12      | 2      | the number of color planes (always 1).        |
+  +---------+---------+--------+-----------------------------------------------+
+  | 28      | 14      | 2      | the number of bits per pixels, which is the   |
+  |         |         |        | color depth of the image. Values can be 1, 4, | 
+  |         |         |        | 8, 16, 24 and 32.                             | 
+  +---------+---------+--------+-----------------------------------------------+
+  | 30      | 16      | 4      | the compression method used on the pixel data.|
+  +---------+---------+--------+-----------------------------------------------+
+  | 34      | 20      | 4      | total image size in bytes. Different to the   |
+  |         |         |        | file size as it includes on the pixel data.   | 
+  +---------+---------+--------+-----------------------------------------------+
+  | 38      | 24      | 4      | horizontal resolution of the image. Relevant  |
+  |         |         |        | for printers I think.                         | 
+  |         |         |        | (pixels per meter, signed integer)            | 
+  +---------+---------+--------+-----------------------------------------------+
+  | 42      | 28      | 4      | vertical resolution of the image.             |
+  |         |         |        | (pixels per meter, signed integer)            | 
+  +---------+---------+--------+-----------------------------------------------+
+  | 46      | 32      | 4      | the number of colors in the color palette,    |
+  |         |         |        | or 0 to default to 2^n, where n=bitsPerPixel. | 
+  +---------+---------+--------+-----------------------------------------------+
+  | 50      | 36      | 4      | the number of important colors used, or 0 when|
+  |         |         |        | all colors are important; generally ignored.  | 
+  +---------+---------+--------+-----------------------------------------------+
+
+  ******************************************************************************
+  | added BITMAPV2INFOHEADER - 52 bytes - 12 extra                             | 
+  ******************************************************************************
+  | 54      | 40      | 4      | red color channel mask.                       |
+  +---------+---------+--------+-----------------------------------------------+
+  | 58      | 44      | 4      | green color channel mask.                     |
+  +---------+---------+--------+-----------------------------------------------+
+  | 62      | 48      | 4      | blue color channel mask.                      |
+  +---------+---------+--------+-----------------------------------------------+
+
+  ******************************************************************************
+  | added BITMAPV3INFOHEADER - 56 bytes - 4 extra                              | 
+  ******************************************************************************
+  | 66      | 52      | 4      | alpha color channel mask.                     |
+  +---------+---------+--------+-----------------------------------------------+
+
+  ******************************************************************************
+  | added BITMAPV4HEADER - 108 bytes - 52 extra                                | 
+  ******************************************************************************
+  | 70      | 56      | 4      | color space magic, e.g. hex 0x73524742, which |
+  |         |         |        | in ASCII is 'sRGB'.                           | 
+  +---------+---------+--------+-----------------------------------------------+
+  | 74      | 60      | 52     | lots of color space information such as gamma |
+  |         |         |        | values and color space endpoints.             | 
+  +---------+---------+--------+-----------------------------------------------+
+
+  ******************************************************************************
+  | added BITMAPV5HEADER - 124 bytes - 16 extra                                | 
+  ******************************************************************************
+  | 122     | 108     | 4      | data relating to ICC color profiles.          |
+  +---------+---------+--------+-----------------------------------------------+
+
+  [figure 4.3. Structure of bitmap info header versions.]
+
+As discussed in the introduction this loader will not give regard to the color
+space or ICC profile data included in the later revisions of the info header
+(versions 4 and 5), thus figure 4.3. skips the details of these headers. This
+extra information is not needed if the goal is simply to load the pixel data.
+
+I will not go into more detail about each member of this header here, if you
+want more info see the references. However most of the members are pretty
+self explanatory, with the exception of the compression mode member. 
+
+The compression mode is still an unsigned integer, but it essentially an enum
+with the following valid values:
+
+  +---------+--------------+-----------------------------------+
+  | value   | enum         | compression method                |
+  ==============================================================
+  | 0       | BI_RGB       | none                              |
+  +---------+--------------+-----------------------------------+
+  | 1       | BI_RLE8      | 8-bit/pixel run-length-encoding   |
+  +---------+--------------+-----------------------------------+
+  | 2       | BI_RLE4      | 4-bit/pixel run-length-encoding   |
+  +---------+--------------+-----------------------------------+
+  | 3       | BI_BITFIELDS | bit fields masks                  |
+  +---------+--------------+-----------------------------------+
+  |            .                                               |
+  |            . and some more that we don't care about        |
+  |            .                                               |
+  +---------+--------------+-----------------------------------+
+
+The other modes can be ignored for this loader since they are for different
+platforms (like window CE, which is an embedded system) and for applications
+like printing which I am not concerned with.
+
+You can also ignore the BI_RL* modes too if you don't want to handle run-length-
+encoded bitmaps. The loader I implement here will be ignoring those. Note that RLE
+is an encoding mode that is only used in color indexed bitmaps. It is never used 
+in full color bitmaps.
+
+We can represent the info header as a C struct like:
+
+struct BitmapInfoHeader
+{
+  // -- since BITMAPINFOHEADER -- size: 40 bytes
+  
+  uint32_t _headerSize_bytes;
+  int32_t _bmpWidth_px;                    // note: signed integers
+  int32_t _bmpHeight_px;
+  uint16_t _numColorPlanes;
+  uint16_t _bitsPerPixel; 
+  uint32_t _compression; 
+  uint32_t _rawImageSize_bytes;
+  int32_t _horizontalResolution_pxPm;
+  int32_t _verticalResolution_pxPm;
+  uint32_t _numPaletteColors;
+  uint32_t _numImportantColors;
+
+  // -- added BITMAPV2INFOHEADER -- size: 52 bytes
+  
+  uint32_t _redMask;
+  uint32_t _greenMask;
+  uint32_t _blueMask;
+
+  // -- added BITMAPV3INFOHEADER -- size: 56 bytes
+  
+  uint32_t _alphaMask;
+
+  // -- added BITMAPV4HEADER -- size: 108 bytes
+
+  uint32_t _colorSpaceMagic;
+  uint32_t _unused0[12];                 // gamma values and the like.
+
+  // -- added BITMAPV5HEADER -- size: 124 bytes
+
+  uint32_t _unused1[4];                  // ICC color profile data.
+};
+
+or simply like,
+
+struct BitmapInfoHeader
+{
+  uint32_t _headerSize_bytes;
+  int32_t  _bmpWidth_px;
+  int32_t  _bmpHeight_px;
+  uint16_t _numColorPlanes;
+  uint16_t _bitsPerPixel; 
+  uint32_t _compression; 
+  uint32_t _rawImageSize_bytes;
+  int32_t  _horizontalResolution_pxPm;
+  int32_t  _verticalResolution_pxPm;
+  uint32_t _numPaletteColors;
+  uint32_t _numImportantColors;
+  uint32_t _redMask;
+  uint32_t _greenMask;
+  uint32_t _blueMask;
+  uint32_t _alphaMask;
+  uint32_t _colorSpaceMagic;
+};
+
+if we cut out the extra data we don't care about and combine all versions into
+a single header which we can easily do.
+
+--------------------------------------------------------------------------------
+
+5 - POSSIBLE VARIATIONS OF BMP FILE
+
+So with all the optional sections, different pixel formats, and different info
+headers, what variations of bmp file are actually possible?
+
+In practice there are effectively only 2 main variations of bitmap file that you
+will encounter, and the variation you do encounter will depend on whether your 
+pixels are color indexed or use full colors.
+
+Further to make the format easier to follow and write a loader for, we can 
+actually ignore certain details of the format. 
+
+If we don't care, as we don't, about the extra color data we can ignore the 
+sections after the pixel array (the gap and the ICC color profile data). 
+
+We can also ignore the gap before the pixel data since the file header contains 
+the absolute offset to the pixel data thus we can just jump straight to said 
+data which means it doesn't matter if the gap is there or not. 
+
+Also, thanks to the way the info header was extended from BITMAPINFOHEADER 
+to BITMAPV2INFOHEADER we can also effectively ignore the extra bit masks 
+section. Why? Because those extra bit masks will only ever be present if our
+info header is BITMAPINFOHEADER (version 1) and are the exact data which was 
+added in version 2 of the header, and will occupy the exact same position 
+in the file, thus we can just treat BITMAPINFOHEADER as BITMAPV2INFOHEADER 
+in the case where those optional masks are present. You may be wondering 
+how we would know if they are present. Easy! They are only present if our
+file contains the BITMAPINFOHEADER (i.e. BitmapInfoHeader::_headerSize = 40),
+and our compression mode is BI_BITFIELDS. If these conditions are found, we
+simply pretend our file actually contains BITMAPV2INFOHEADER.
+
+This leaves us with the 2 possible simpler variations shown in figure 5.1.
+
+    [ variation 1. for color indexed pixel data ]
+  +-----------+----------+-----------+-----------+
+  | structure | optional |   size    |  purpose  |
+  |    name   |          |           |           |
+  ================================================
+  | file      | no       |  14 bytes | general   |
+  | header    |          |           | info      |
+  +-----------+----------+-----------+-----------+
+  | info      | no       | versions  | detailed  |
+  | header    |          | differ in | info and  |
+  |           |          | fixed     | pixel     | 
+  |           |          | size      | format    |   
+  +-----------+----------+-----------+-----------+  
+  | color     | yes      | variable  | mandatory |
+  | table     |          | size      | for color |
+  |           |          |           | depths <=8|
+  +-----------+----------+-----------+-----------+
+  | pixel     | no       | variable  | the actual|
+  | array     |          | size      | pixel data| 
+  +-----------+----------+-----------+-----------+ 
+
+    [ variation 2. for full color pixel data ]
+  +-----------+----------+-----------+-----------+
+  | structure | optional |   size    |  purpose  |
+  |    name   |          |           |           |
+  ================================================
+  | file      | no       |  14 bytes | general   |
+  | header    |          |           | info      |
+  +-----------+----------+-----------+-----------+
+  | info      | no       | versions  | detailed  |
+  | header    |          | differ in | info and  |
+  |           |          | fixed     | pixel     |
+  |           |          | size      | format    |
+  +-----------+----------+-----------+-----------+
+  | pixel     | no       | variable  | the actual|  
+  | array     |          | size      | pixel data| 
+  +-----------+----------+-----------+-----------+  
+
+  [figure 5.1. The 2 main bitmap file format variations]
+
+You can further simplify the picture if you are only interested in loading
+indexed pixels, or in loading full color pixels, in which case you can ignore
+one of the 2 variations. Many of the bmp loaders I have read on github make
+this decision.
+
+Variation 1 is for indexed pixel data. This is when the pixels consist of 
+integer indexes into a color table rather than the pixels containing the
+color data themselves. In this case our bmp file will contain a color table
+and our pixels will simply be 1, 2, 4 or 8 bit unsigned integers packed into
+rows of bytes in the pixel array. The color table is mandatory for pixels of
+this integer size.
+
+Variation 2 is for full color pixels, i.e. pixels which consist of RGBA color
+channel data. In this case it is likely no color table will be present in the
+file since it is not needed by the pixels and the pixels will consist of 16, 24
+or 32 bit unsinged integers packed into rows in the pixel array.
+
+It is worth noting that the color table may still be present in variation 2 as
+the bmp file format standard states it can be present to allow some programs to
+use colors from within it to optimize for certain display types. However since
+we are to seek directly to the pixel array using the offset in the file header,
+we can easily handle the file as if it were not there. Thus if we encounter a
+bitmap with full color pixels we can always treat the file like variation 2.
+
+We can identify the expected variation by the bits per pixel (bpp) data in the 
+info header. If our bpp == 1,2,4 or 8 our file is variation 1, if bpp == 16,24 
+or 32 our file is variation 2. This will always be the case for a legal bmp 
+file.
+
+--------------------------------------------------------------------------------
+
+6 - INFO HEADERS AND VARIATIONS
+
+So given our 2 main types of variations what info headers are we likely to find
+in each variation?
+
+From experimenting with GIMP (version 2.10.22), it appears as though GIMP at 
+least, seems to follow the principle of using the smallest info header possible.
+
+Thus if we have an indexed color mode image, where we dont need the color 
+channel masks added in BITMAPV2INFOHEADER, GIMP exports a bitmap which uses
+BITMAPINFOHEADER (i.e. the 40 byte version 1). This is the case for bpp of
+1, 4 and 8. Note that GIMP does not support 2-bit bpp images.
+
+Note that in GIMP, when using color indexed mode, there is no option to export
+color space information. Thus the data in the later headers cannot be included
+and thus there is no reason for the bitmap to use these later headers in this
+color mode.
+
+GIMP does provide the option to export run-length-encoded (RLE) color indexed 
+bitmaps though. This can be included in the version 1 info header.
+
+For full color bitmaps with bpp=16,24 or 32, GIMP will export either 
+BITMAPV3INFOHEADER or BITMAPV5HEADER. Which it outputs depends on if you export 
+color space info in the bitmap; version 5 has space for that data whereas 
+version 3 does not. GIMP will never output a color table with this color mode.
+
+Note that version 3 is the one which includes the alpha mask. GIMP appears to use
+this version even if you don't include an alpha channel in your bitmap.
+
+Also note that GIMP will never use BITMAPINFOHEADER with the extra masks after
+the info header in the extra section. It will instead simply use one of the later
+info header versions which include the masks in the header.
+
+Thus GIMP only appears to output 3 different headers as shown in figure 6.1.
+
+      [header-0]               [header-1]             [header-2]           
+  +------------------+   +--------------------+   +------------------+ 
+  | file header      |   | file header        |   | file header      | 
+  +------------------+   +--------------------+   +------------------+ 
+  | BITMAPINFOHEADER |   | BITMAPV3INFOHEADER |   | BITMAPV5HEADER   | 
+  +------------------+   +--------------------+   +------------------+ 
+  | color table      |   | pixel array        |   | pixel array      | 
+  +------------------+   +--------------------+   +------------------+ 
+  | pixel array      |   
+  +------------------+   
+   For indexed color      For full color mode,    For full color mode, 
+   mode.                  no color space data.    yes color space data.
+   (bpp == 1, 4 or 8)     (bpp == 16, 24 or 32)    (bpp == 16, 24 or 32) 
+
+--------------------------------------------------------------------------------
+
+7 - COLOR TABLE FORMAT
+
+The color table format is always the same and is very simple.
+
+Each color consists of 4 bytes where each byte is one of the 4 color channels
+blue, green, red, alpha in that order in the file.
+
+The bytes of each color are also aligned consecutively with no padding between
+the colors.
+
+Thus reading the color table is simply a job of reading the number of colors
+from the info header, and for each color, extract it's 4 bytes, and the color
+channel values from those 4 bytes.
+
+note: if the info head states there are 0 colors and our bpp == 1,2,4 or 8 then
+the number of colors is equal to a default value of pow(2, bpp). For example
+if bpp=2 then we would have pow(2,2) == 4 colors in the color table.
+
+--------------------------------------------------------------------------------
+
+8 - PIXEL ARRAY FORMAT
+
+The pixel array consists of rows of pixels with no padding between the bytes
+of each pixel.
+
+All rows must be 4 byte aligned however so there may be padding at the end of
+each row.
+
+The ordering of the rows in the file depend on the absolute value of the image
+height value in the info header.
+
+If the image height is positive the rows are ordered such that the bottom row
+in the bitmap comes 1st in the file and the top row last.
+
+If the image height is negative the reverse is true, with the top row of the
+bitmap coming 1st in the file.
+
+This should be taken into account when loading the pixel data and it applies
+to both full color and indexed pixel color modes.
+
+--------------------------------------------------------------------------------
+
+9 - INDEXED PIXEL FORMAT
+
+For pixels of 8-bits or less, the pixel data consists of indices into a color 
+palette. The indices are either 1-bit, 2-bit, 4-bit or 8-bit values and are 
+packed into the bytes of a row such that, for example, a bitmap with 2-bit 
+indices, will have 4 indices in each byte of a row.
+
+Consider an 8x1 [width, height] bitmap with 2-bit indices permitting 2^2=4 
+colors in the palette illustrated as:
+
+        p0 p1 p2 p3 p4 p5 p6 p7        pN == pixel number in the row
+       +--+--+--+--+--+--+--+--+
+       |I0|I1|I0|I2|I0|I3|I0|I1|       IN == index N into color palette
+       +--+--+--+--+--+--+--+--+
+            [8x1 bitmap]
+
+Since this bitmap uses 2-bits per index, 4 indices (so 4 pixels) can be packed 
+into a single byte. The specific format for how these indices are packed is 
+such that the left-most pixel in the row is stored in the most-significant 
+bits of the byte which can be illustrated as:
+
+            p0 p1 p2 p3
+         0b 00 01 00 10  <-- the 0rth byte in the bottom row (the only row)
+            ^  ^  ^  ^
+            |  |  |  |
+            I0 I1 I0 I2
+
+The bottom row will actually consist of 4 bytes in total. We will have 2 bytes 
+for the pixels since the row has 8 pixels and we can pack 4 indices (1 for each 
+pixel) into a single byte, and we will have 2 bytes of padding since rows must 
+be 4-byte aligned in the bitmap file. Thus our full row bytes will read as:
+
+          [byte0]          [byte1]         [byte2]          [byte3]
+         p0 p1 p2 p3      p4 p5 p6 p7
+    | 0b 00 01 00 10 | 0b 00 11 00 01 { 0b 00 00 00 00 | 0b 00 00 00 00 }
+         ^  ^  ^  ^       ^  ^  ^  ^
+         |  |  |  |       |  |  |  |               [padding]
+         I0 I1 I0 I2      I0 I3 I0 I1
+             
+note that although the pixels are stored from left-to-right, the bits in the 
+indices are still read from right-to-left, i.e. decimal 2 = 0b10 and not 0b01.
+
+--------------------------------------------------------------------------------
+
+10 - RGBAX PIXEL FORMAT
+
+The pixel data in this format consists of 3 or 4 color channels, red (R), 
+green (G), blue (B) and an optional alpha (A). The X in RGBAX is the 'channel' 
+for the unused pixels.
+
+Extracting the pixel data in this format is very simple if you use the color
+masks. You simply extract the bytes of each pixel and mask out the channel
+data.
+
+So if, for example, your bpp=16, your pixels each use 2 bytes in the file, so
+you simply extract 2 bytes at a time and mask out the color channels.
+
+By using the masks you can handle any and all RGBAX color formats.
+
+note: not all bitmap files will contain masks even though the pixels are in
+RGBAX full color mode. This is because default values for the channel masks
+exist for different bpp values. These default masks apply if compression ==
+BI_RGB. Thus you may get a bitmap file which uses version 1 of the info header
+which does not contain any masks (or an extra masks section after the header)
+and yet still has bpp > 8. In this case the default masks apply.
+
+For a full set of defaults that apply for each header and bpp value refer to
+diagram 3 in reference [0], titled "all the possible pixel formats in a DIB".
+
+--------------------------------------------------------------------------------
+
+11 - THE STEPS TO LOAD A BITMAP
+
+The loader implemented in this project can handle both indexed and full color
+bitmaps of any pixel format. It does not give regard to compressed (RLE) 
+bitmaps or color space information. It can handle any of the 5 versions of the
+bitmap info header.
+
+The broad loading steps undertaken are shown in figure 11.1.
+
+           +-----------------------------------------------+
+           |     1. read the 14 byte file header           |
+           +-----------------------------------------------+
+                                 |
+           +-----------------------------------------------+
+           |  2. read the 1st 40 bytes of the info header  |
+           +-----------------------------------------------+
+                                 |
+                 +-------------------------------+        no
+                 |    info header size > 40      |---------->-------+
+                 |              OR               |                  |
+                 |    header size == 40          |                  |
+                 |              &&               |                  |
+                 |  compression == BI_BITFIELDS  |                  |
+                 +-------------------------------+                  |
+                                 |  yes                             |
+           +-----------------------------------------------+        |
+           | 3. read the 12 bytes of the version 2 header  |        V
+           +-----------------------------------------------+        |
+                                 |                                  |
+                 +-------------------------------+        no        |
+                 |    info header size > 52 ?    |---------->-------+
+                 +-------------------------------+                  |
+                                 |  yes                             |
+           +-----------------------------------------------+        |
+           |  4. read the 4 bytes of the version 3 header  |        V
+           +-----------------------------------------------+        |
+                                 |                                  |
+                                 +------------------<---------------+
+                                 |
+           +-----------------------------------------------+  no  +--------+
+           |    compression == BI_RGB || BI_BITFIELDS      |------|  EXIT  |
+           +-----------------------------------------------+      +--------+
+                                 | yes
+                           +------------+
+                           |    bpp ?   |
+                           +------------+
+                                  |
+          +-----------------+-----o-------------+------------------+
+          |                 |                   |                  |
+   +--------------+      +---------+        +---------+       +---------+       
+   |  = 1|2|4|8   |      |  = 16   |        |  = 24   |       |  = 32   |       
+   +--------------+      +---------+        +---------+       +---------+       
+          |                 |                   |                  |
+   +--------------+      +------------+   +-------------+     +------------+
+   | read color   |      |compression |   | set default |     |compression |
+   |  table       |      | == BI_RGB  |   | color masks |     | == BI_RGB  |
+   +--------------+      +------------+   +-------------+     +------------+
+          |             yes |        | no       |            yes |        | no
+ +-----------------+ +-------------+ |          |         +-------------+ |
+ |5.a read indexed | | set default | |          |         | set default | |
+ |    pixels       | | color masks | v          v         | color masks | v
+ +-----------------+ +-------------+ |          |         +-------------+ |
+          |                 |        |          |                |        |
+          |             +---------------------------------------------------+
+          |             |      5.b. read full color pixels                  |
+          v             +---------------------------------------------------+
+          |                                    |
+          |       +-----------+                |
+          +--->---|  6. done  |-------<--------+
+                  +-----------+
+
+These steps show how to select which loading method to perform and setup the
+arguments to the loading method for the pixel format in the file.
+
+For indexed pixels, a single function that can handle all 3 possible bpp values
+can easily be written to implement step 5.a.
+
+For full color pixels a single function that can handle any RGBAX color channel
+format can also easily be written by using the color channel masks. For each
+pixel, in each row of the pixel array, this function will simply extract 2, 3 
+or 4 bytes from the pixel array buffer (for 16, 24, and 32 bpp pixel formats 
+respectively) and use the masks to extract each color channels. The setup for
+this function is then simply the job of providing the correct masks. This is
+what the "set default color masks" jobs do. Note that this job will set 
+different default masks for each bpp mode.
+
+The above steps are all that is needed to handle any indexed pixel format and
+any full color pixel format. The loader implemented in bmpimage.cpp carries
+out the above steps.
+
+note: the if check between steps 2 and 3 handles the case where there are
+extra bitmasks appended after the info header when version 1 of the info
+header is used with a compression mode of BI_BITFIELDS. This is where we
+treat this case as if our bitmap file contains the version 2 header.
+
+note: we only read the color mask data if the header size is large enough to
+contain them. If the header size is not large enough we assume they do not
+exist in which our bitmap will be a indexed color bitmap with a color table
+(unless the scenario in the above note applies).
+
+note: we effectively give no regard to later versions of the header in this
+loader; we neither check for them or load any of their data. This can work 
+because those headers extend the prior as already stated, thus we can just
+treat these later versions like the earlier versions for our purposes.
+
+--------------------------------------------------------------------------------
+
+These are some references I found helpful when learning about this file
+format.
+
+REFERENCES:
+
+[0] https://en.wikipedia.org/wiki/BMP_file_format#Color_table
+[1] https://medium.com/sysf/bits-to-bitmaps-a-simple-walkthrough-of-bmp-image-format-765dc685739
+[2] https://solarianprogrammer.com/2018/11/19/cpp-reading-writing-bmp-images/
+
