@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
-  FILE: bmp_file_format.doc
+  FILE: bmpimage_doc.txt
   AUTHOR: Ian Murfin - github.com/ianmurfinxyz
   CREATED: Fri 8 Jan 2021
   UPDATED: Mon 11 Jan 2021
@@ -753,10 +753,9 @@ extra bitmasks appended after the info header when version 1 of the info
 header is used with a compression mode of BI_BITFIELDS. This is where we
 treat this case as if our bitmap file contains the version 2 header.
 
-note: we only read the color mask data if the header size is large enough to
-contain them. If the header size is not large enough we assume they do not
-exist in which our bitmap will be a indexed color bitmap with a color table
-(unless the scenario in the above note applies).
+note: we don't always need to read the mask data. In the indexed color mode
+we don't need it, and in the RGBAX full color mode we may be expected to
+use default mask values, in which case compresssion == BI_RGB.
 
 note: we effectively give no regard to later versions of the header in this
 loader; we neither check for them or load any of their data. This can work 
@@ -765,10 +764,10 @@ treat these later versions like the earlier versions for our purposes.
 
 --------------------------------------------------------------------------------
 
+REFERENCES:
+
 These are some references I found helpful when learning about this file
 format.
-
-REFERENCES:
 
 [0] https://en.wikipedia.org/wiki/BMP_file_format#Color_table
 [1] https://medium.com/sysf/bits-to-bitmaps-a-simple-walkthrough-of-bmp-image-format-765dc685739
